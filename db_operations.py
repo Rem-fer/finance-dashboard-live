@@ -213,6 +213,48 @@ def save_daily_balance_snapshot(balances):
     conn.close()
     print(f"Saved balance snapshot for {len(balances)} accounts on {snapshot_date}")
 
+
+def new_save_daily_balance_snapshot(balances):
+    """
+    Save daily balance snapshot for all accounts.
+
+    Args:
+        balances (dict): Dictionary mapping account IDs to balance info.
+                        Format: {account_id: {'current': 22.0, 'available': 222.0, ...}}
+
+    Note:
+        Should be run once per day (e.g., midnight via cron job).
+        Uses ON CONFLICT to prevent duplicates if run multiple times.
+    """
+    if not balances:
+        print("No balances to save")
+        return
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    snapshot_date = datetime.now().date().isoformat()  # YYYY-MM-DD format
+
+    for account_id, balance_info in balances.items():
+        cursor.execute("""
+            INSERT INTO finance.balance_history
+            (account_id, currency, current_balance, available_balance, overdraft_limit, credit_limit, snapshot_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (account_id, snapshot_date) DO NOTHING
+        """, (
+            account_id,
+            balance_info.get('currency'),
+            balance_info.get('current'),
+            balance_info.get('available'),
+            balance_info.get('overdraft'),
+            balance_info.get('credit_limit'),
+            snapshot_date
+        ))
+
+    conn.commit()
+    conn.close()
+    print(f"Saved balance snapshot for {len(balances)} accounts on {snapshot_date}")
+
 def categorise_transfers():
     conn = get_connection()
     cursor = conn.cursor()
@@ -224,6 +266,8 @@ def categorise_transfers():
             OR description LIKE '%TO REVOLUT%'
             OR description LIKE '%BARCLAYCARD%'
             OR description LIKE '%Sent from Revolut%'
+            OR description LIKE '%OBAYW%'
+            OR description LIKE 'To Remy Fernando%'
             """)
         conn.commit()
         print(f"Categorised {cursor.rowcount} transfers")
@@ -251,7 +295,6 @@ def categorise_bcard_payments():
         conn.close()
 
 
-
 def categorise_step_one():
     """
     Categorise transactions by matching against known merchants.
@@ -267,9 +310,9 @@ def categorise_step_one():
             UPDATE finance.transactions t
             SET category = m.category
             FROM finance.merchants m
-            WHERE t.description ILIKE '%' || m.merchant_name || '%'
+            WHERE (t.description ILIKE '%' || m.merchant_name || '%'
+            OR t.description = m.description)
             AND t.category IS NULL
-            AND m.merchant_name IS NOT NULL
             AND m.category IS NOT NULL
         """)
         conn.commit()
@@ -306,8 +349,8 @@ def categorise_step_two():
                 # 1. Add new description to the merchants table
                 cursor.execute(
                     """INSERT INTO finance.merchants
-                        (description, merchant_name, category)
-                        VALUES (%s, %s, %s)
+                        (description, merchant_name, category, needs_review)
+                        VALUES (%s, %s, %s, TRUE)
                         ON CONFLICT (description) DO UPDATE 
                        SET merchant_name = EXCLUDED.merchant_name, 
                        category = EXCLUDED.category

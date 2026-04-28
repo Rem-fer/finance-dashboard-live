@@ -218,6 +218,49 @@ def get_current_balances(access_token, account_ids, is_card=False):
 
     return current_balances
 
+def get_balance_w_labels():
+    """
+    Fetches current balances for all accounts in finance.accounts.
+    Queries DB for account info, then calls TrueLayer API for each account.
+    Returns a dict of {account_label: balance} or None if DB connection fails.
+    Credit card balances are returned as negative values.
+    """
+    balances = {}
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+                        SELECT account_label, provider_name, account_type, account_id
+                        FROM finance.accounts
+                        """)
+
+        for row in cursor.fetchall():
+            label, provider, acc_type, acc_id = row
+            try:
+                token = get_access_token(provider)
+                if not token:
+                    print(f"No token for {provider}, skipping {label}")
+                    continue
+
+                balance_response = get_balance(
+                    access_token=token,
+                    account_id=acc_id,
+                    is_card=acc_type == "CREDIT"
+                )
+                balance = balance_response["results"][0]["available"]
+                balances[label] = balance if acc_type != "CREDIT" else -balance
+
+            except (KeyError, IndexError) as e:
+                print(f"Unexpected response for {label}: {e}")
+            except Exception as e:
+                print(f"Error fetching balance for {label}: {e}")
+
+    except Exception as e:
+        print(f"DB error: {e}")
+        return None
+
+    return balances
+
 
 
 AUTH_CODE = ""   # Changes everytime — get from TrueLayer console
@@ -226,6 +269,6 @@ IS_CARD = False  # Set to True for credit cards accounts (Barclaycard, Amex)
 
 if __name__ == "__main__":
     get_initial_token(AUTH_CODE, PROVIDER)
-    access_token = get_access_token(PROVIDER)
-    accounts = get_accounts(access_token, is_card=IS_CARD)
-    save_accounts(accounts, is_card=IS_CARD)
+    token = get_access_token(PROVIDER)
+    accounts_info = get_accounts(token, is_card=IS_CARD)
+    save_accounts(accounts_info, is_card=IS_CARD)
